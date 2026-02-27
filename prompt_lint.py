@@ -30,7 +30,7 @@ PATTERNS = [
     # --- Direct instruction override ---
     Pattern("INSTRUCTION_OVERRIDE", "critical",
         "Explicit override of prior instructions",
-        r"(?i)(ignore|disregard|forget|override|supersede|bypass|cancel)\s+(all\s+)?(previous|prior|earlier|above|your|system|original)\s+(instructions?|directives?|rules?|constraints?|prompts?|guidelines?)",
+        r"(?i)(ignore|disregard|forget|override|supersede|bypass|cancel)\s+(?:\w+\s+){0,3}(instructions?|directives?|rules?|constraints?|prompts?|guidelines?)",
         "Classic prompt injection opener"),
 
     Pattern("INSTRUCTION_OVERRIDE", "critical",
@@ -78,7 +78,7 @@ PATTERNS = [
     # --- Exfiltration ---
     Pattern("EXFILTRATION", "critical",
         "System prompt extraction request",
-        r"(?i)(print|output|display|reveal|show|repeat|write out|tell me)\s+(your\s+)?(system\s+prompt|initial\s+instructions?|full\s+prompt|original\s+prompt|all\s+instructions?)",
+        r"(?i)(print|output|display|reveal|show|repeat|write out|tell me)\s+(?:\w+\s+){0,5}(system\s+prompt|initial\s+instructions?|full\s+prompt|original\s+prompt|all\s+instructions?)",
         "Attempts to extract system prompt"),
 
     Pattern("EXFILTRATION", "high",
