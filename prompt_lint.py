@@ -15,6 +15,43 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# Statistical scorer (n-gram Markov model, optional)
+# ---------------------------------------------------------------------------
+
+def _load_stat_model(model_path: Path | None = None) -> dict | None:
+    """Load the n-gram LLR model if available. Returns None if not found."""
+    if model_path is None:
+        model_path = Path(__file__).parent / "model.json"
+    if not model_path.exists():
+        return None
+    try:
+        return json.load(model_path.open())
+    except Exception:
+        return None
+
+def _stat_score(text: str, model: dict, top_k: int = 200) -> tuple[float, int]:
+    """Score text against the LLR model. Returns (raw_score, token_count)."""
+    import re as _re
+    # Minimal tokenizer (must match corpus_analysis.py)
+    text = _re.sub(r"```.*?```", " ", text, flags=_re.DOTALL)
+    text = _re.sub(r"`[^`]+`", " ", text)
+    text = _re.sub(r"https?://\S+", " ", text)
+    text = _re.sub(r"[#*_~>|]", " ", text)
+    text = _re.sub(r"\[.*?\]", "", text)
+    tokens = _re.findall(r"[a-z][a-z'\-]*[a-z]|[a-z]", text.lower())
+    if len(tokens) < 5:
+        return 0.0, 0
+    total = 0.0
+    for n_str, llr_list in model.get("llr_tables", {}).items():
+        n = int(n_str)
+        lookup = {tuple(gram): llr for llr, gram in llr_list[:top_k]}
+        for i in range(len(tokens) - n + 1):
+            gram = tuple(tokens[i:i+n])
+            if gram in lookup:
+                total += lookup[gram]
+    return total, len(tokens)
+
+# ---------------------------------------------------------------------------
 # Pattern library
 # ---------------------------------------------------------------------------
 
@@ -51,7 +88,7 @@ PATTERNS = [
 
     Pattern("ROLE_HIJACK", "high",
         "DAN / jailbreak persona",
-        r"(?i)(DAN|do\s+anything\s+now|jailbreak(ed)?|unrestricted\s+(AI|mode|version)|without\s+(restrictions?|limits?|filters?|safety))",
+        r"(?i)(do\s+anything\s+now|jailbreak(ed)?|unrestricted\s+(AI|mode|version)|without\s+(restrictions?|limits?|filters?|safety)|DAN[\s\-]mode|DAN[\s\-]persona)",
         "Known jailbreak persona patterns"),
 
     Pattern("ROLE_HIJACK", "medium",
@@ -181,7 +218,36 @@ def scan(text: str) -> list[Finding]:
         if key not in seen:
             seen.add(key)
             deduped.append(f)
-    return sorted(deduped, key=lambda f: (-SEVERITY_SCORE[f.severity], f.line))
+    deduped = sorted(deduped, key=lambda f: (-SEVERITY_SCORE[f.severity], f.line))
+
+    # Statistical scoring layer (if model available)
+    stat_model = _load_stat_model()
+    if stat_model:
+        raw, ntok = _stat_score(text, stat_model)
+        if ntok >= 10:
+            normalized = raw / ntok
+            corpus = stat_model.get("corpus_stats", {})
+            note = (f"n-gram score {raw:+.1f} ({normalized:+.3f}/token) | "
+                    f"model trained on {corpus.get('malicious_docs',0)} malicious, "
+                    f"{corpus.get('benign_docs',0)} benign docs")
+            if normalized > 1.5:
+                sev = "high"
+            elif normalized > 0.5:
+                sev = "medium"
+            elif normalized > 0.0:
+                sev = "low"
+            else:
+                sev = None
+            if sev:
+                deduped.insert(0, Finding(
+                    line=0, col=0,
+                    category="STATISTICAL",
+                    severity=sev,
+                    description="N-gram Markov analysis: document language pattern is malicious-leaning",
+                    note=note,
+                    snippet="(whole document)"
+                ))
+    return deduped
 
 def risk_score(findings: list[Finding]) -> int:
     return sum(SEVERITY_SCORE[f.severity] for f in findings)
