@@ -21,11 +21,27 @@ from collections import Counter
 # Tokenization
 # ---------------------------------------------------------------------------
 
+def strip_metadata(text: str) -> str:
+    """Remove test case metadata headers and HTML badge artifacts."""
+    import re as _re
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        # Skip test case annotation lines
+        if stripped.startswith('[TEST CASE') or stripped.startswith('[EXPECTED:') or stripped.startswith('[Source:') or stripped.startswith('[Expected:'):
+            continue
+        # Skip HTML badge/image lines common in GitHub READMEs
+        if _re.match(r'\[!\[', stripped) or _re.match(r'<img ', stripped):
+            continue
+        lines.append(line)
+    return chr(10).join(lines)  # join with newline
+
 def tokenize(text: str) -> list[str]:
     """Normalize and tokenize text for n-gram analysis.
     Strips markdown formatting, lowercases, splits on whitespace/punctuation.
     Keeps contractions and hyphenated words intact.
     """
+    text = strip_metadata(text)
     # Strip markdown code blocks (don't want code syntax to dominate)
     text = re.sub(r"```.*?```", " CODE_BLOCK ", text, flags=re.DOTALL)
     text = re.sub(r"`[^`]+`", " INLINE_CODE ", text)
@@ -48,10 +64,11 @@ def ngrams(tokens: list[str], n: int) -> list[tuple]:
 # Corpus loader
 # ---------------------------------------------------------------------------
 
-def load_corpus(directory: Path, skip_prefix: str = "[TEST") -> list[str]:
+def load_corpus(directory: Path, skip_prefix: str = "[TEST", recursive: bool = True) -> list[str]:
     """Load all .md files from a directory as a list of document strings."""
     docs = []
-    for f in sorted(directory.glob("*.md")):
+    pattern = "**/*.md" if recursive else "*.md"
+    for f in sorted(directory.glob(pattern)):
         text = f.read_text(errors="replace")
         docs.append(text)
     return docs

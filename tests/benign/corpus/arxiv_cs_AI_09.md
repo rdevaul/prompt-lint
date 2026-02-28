@@ -1,0 +1,3 @@
+# Generalized Rapid Action Value Estimation in Memory-Constrained Environments
+
+Generalized Rapid Action Value Estimation (GRAVE) has been shown to be a strong variant within the Monte-Carlo Tree Search (MCTS) family of algorithms for General Game Playing (GGP). However, its reliance on storing additional win/visit statistics at each node makes its use impractical in memory-constrained environments, thereby limiting its applicability in practice. In this paper, we introduce the GRAVE2, GRAVER and GRAVER2 algorithms, which extend GRAVE through two-level search, node recycling, and a combination of both techniques, respectively. We show that these enhancements enable a drastic reduction in the number of stored nodes while matching the playing strength of GRAVE.

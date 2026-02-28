@@ -1,0 +1,3 @@
+# Productivity and Collaboration in Hybrid Agile Teams: An Interview Study
+
+Hybrid work has become a reality post-pandemic, transforming how Agile teams deliver value, collaborate, and adapt. This study investigate how hybrid settings influence productivity and collaboration through nine interviews with three Norwegian Agile teams. Our findings show that hybrid work reduces informal interaction, creates uneven participation, and increases reliance on digital tools. Agile ceremonies became alignment anchors, while trust, communication, and tool support mediate team effectiveness. Hybrid Agile work is an evolving field that requires tailored structures to support inclusion, team cohesion, and sustainable performance.

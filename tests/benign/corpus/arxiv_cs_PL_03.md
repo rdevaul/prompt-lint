@@ -1,0 +1,3 @@
+# Type-Based Enforcement of Non-Interference for Choreographic Programming
+
+Choreographies describe distributed protocols from a global viewpoint, enabling correct-by-construction synthesis of local behaviours. We develop a policy-parametric type system that prevents information leaks from high-security data to low-security observers, handling both explicit and implicit flows through a program-counter discipline. The system supports recursive procedures via a procedure context that we reconstruct through constraint generation. We prove termination-insensitive non-interference with respect to a standard small-step semantics.

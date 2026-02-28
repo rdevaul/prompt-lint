@@ -1,0 +1,3 @@
+# MRNA vaccine
+
+An mRNA vaccine is a type of vaccine that uses a copy of a molecule called messenger RNA (mRNA) to produce an immune response. The vaccine delivers molecules of antigen-encoding mRNA into cells, which use the designed mRNA as a blueprint to build foreign protein that would normally be produced by a pathogen or by a cancer cell. These protein molecules stimulate an adaptive immune response that teaches the body to identify and destroy the corresponding pathogen or cancer cells. The mRNA is delivered by a co-formulation of the RNA encapsulated in lipid nanoparticles that protect the RNA strands and help their absorption into the cells.

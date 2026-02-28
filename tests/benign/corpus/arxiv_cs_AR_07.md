@@ -1,0 +1,3 @@
+# Heterogeneous Memory Design Exploration for AI Accelerators with a Gain Cell Memory Compiler
+
+As memory increasingly dominates system cost and energy, heterogeneous on-chip memory systems that combine technologies with complementary characteristics are becoming essential. Gain Cell RAM (GCRAM) offers higher density, lower power, and tunable retention, expanding the design space beyond conventional SRAM. To this end, we create an OpenGCRAM compiler supporting both SRAM and GCRAM. It generates macro-level designs and layouts for commercial CMOS processes and characterizes area, delay, and power across user-defined configurations. The tool enables systematic identification of optimal heterogeneous memory configurations for AI tasks under specified performance metrics.
