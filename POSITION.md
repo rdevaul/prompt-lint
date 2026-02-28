@@ -91,39 +91,64 @@ attacker who can modify a skill file on disk, in a package repository, or
 in transit can inject malicious behavior through an allowlisted skill.
 
 The complete solution requires **cryptographic verification of skill integrity
-and provenance**:
+and provenance**. `skill-signer` (https://github.com/rdevaul/skill-signer)
+implements this for the OpenClaw skill ecosystem.
 
-- Each skill is signed by its author (Ed25519 or equivalent)
-- The operator maintains a trust store of authorized signing keys
-- At load time, each skill's signature is verified against the trust store
-- A skill that fails signature verification is not loaded, even if its name
-  is on the allowlist
+**Mechanism:** SSH Ed25519 signing (using OpenSSH 8.0+ as the signing backend),
+with GPG and Sigstore as alternatives. Each signed skill contains a
+`MANIFEST.sig.json` that records the SHA-256 hash of every file in the skill
+directory, the signer's identity and key fingerprint, a timestamp, and the
+cryptographic signature. The manifest itself is signed, so any modification to
+any file in the skill — including SKILL.md — invalidates the signature.
 
-This is analogous to how package managers like apt and npm handle package
-signing, or how iOS handles code signing. The key insight is that trust is
-transitive from the signing key: if you trust the author's key, you trust
-any skill they sign, subject to review.
+```bash
+# One-time: generate a signing key
+skill-signer keygen --name "author@example.com" --output ~/.ssh/skill_signing_key
 
-**The proposed skill signing workflow:**
+# Sign a skill before publishing
+skill-signer sign ./my-skill --key ~/.ssh/skill_signing_key
+
+# Operator adds author to trust store
+skill-signer trust add ~/.ssh/skill_signing_key.pub
+
+# Agent runtime verifies at load time
+skill-signer verify ./my-skill --allowed-signers ~/.config/skill-signer/allowed_signers
+```
+
+**Trust model:** The allowed_signers file uses SSH's native format, supporting
+explicit trust, revocation, and key expiry. Trust is transitive: skill
+dependencies are verified recursively against the trust store. A skill that
+references a dependency signed by an untrusted key fails verification even if
+the top-level skill is trusted.
+
+**ClawHub integration:** Skills published to clawhub.com are automatically
+verified on install, with publisher verification badges and online revocation
+checking.
+
+The workflow from author to agent:
 
 ```
-Author writes SKILL.md
+Author writes SKILL.md + supporting files
     ↓
-Author signs: skill-sign SKILL.md --key author.pem → SKILL.md.sig
+skill-signer sign → MANIFEST.sig.json (hashes + signature)
     ↓
-Operator reviews SKILL.md + verifies signature
+Operator reviews skill content + verifies signature is valid
     ↓
-Operator adds author's public key to trust store
+Operator: skill-signer trust add <author.pub>
     ↓
-Agent runtime verifies signature at load time
+Agent runtime: skill-signer verify at load time
     ↓
-Unsigned or unverified skills: rejected
+Unsigned, tampered, or untrusted-signer skills: rejected
 ```
 
 This chain ensures that a skill executed by an agent has been:
 1. Written by a known, trusted author (key in trust store)
 2. Reviewed by the operator (review is the gate to adding a key)
-3. Unchanged since review (signature would fail if modified)
+3. Unchanged since review (any modification invalidates the manifest signature)
+4. Dependency-clean (all dependencies also verified transitively)
+
+`skill-signer` aligns with the OpenSSF Model Signing (OMS) specification,
+positioning it for broader adoption beyond the OpenClaw ecosystem.
 
 ---
 
@@ -252,9 +277,12 @@ The tools are available and the pattern is clear. What remains is adoption.
 - Perez & Ribeiro (2022). "Ignore Previous Prompt: Attack Techniques for Language Models." *NeurIPS ML Safety Workshop*
 - Boucher et al. (2021). "Bad Characters: Imperceptible NLP Attacks." *arXiv:2106.09898*
 - prompt-lint: https://github.com/rdevaul/prompt-lint
+- skill-signer: https://github.com/rdevaul/skill-signer
+- ClawHub skill registry: https://clawhub.com
 - OpenClaw skill framework: https://docs.openclaw.ai/skills
+- OpenSSF Model Signing spec: https://github.com/ossf/model-signing-spec
 
 ---
 
-*Feedback welcome. This is a working draft — the skill signing specification
-in particular will be developed further as implementation begins.*
+*Feedback welcome. This is a working draft. Both prompt-lint and skill-signer
+are available now; integration with agentic frameworks and ClawHub is ongoing.*
