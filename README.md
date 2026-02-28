@@ -1,16 +1,41 @@
 # prompt-lint
 
-A fast, dependency-free prompt injection detector for agentic research pipelines.
+A fast, dependency-free prompt injection and skill presence detector for agentic pipelines.
 
-Scans text and markdown files for patterns that suggest prompt injection attempts,
-agent skill hijacking, permission escalation, exfiltration, and other attacks
-targeting LLM-based agents.
+## Intent — What This Is For
+
+**prompt-lint is not primarily about detecting malicious intent.** A document
+can be completely benign in motivation and still pose an injection risk to a
+sub-agent that processes it.
+
+The core threat model: a research sub-agent fetching content from the web,
+email, documents, or tool outputs may encounter text that contains agent
+instructions, skill-file syntax, or behavioral overrides — whether placed
+there maliciously or not. An unhardened agent that processes this content
+without filtering may execute those instructions.
+
+**The correct defense is not intent detection — it is presence detection.**
+Any skill or instruction set that the agent wasn't explicitly given should
+be treated as a potential injection, regardless of whether it looks
+"malicious." The only skills an agent should execute are those on a
+pre-approved allowlist, ideally with cryptographic verification of their
+integrity and provenance. Everything else — however innocent it may appear —
+should be quarantined before reaching the agent.
+
+prompt-lint implements the detection side of this: scanning external content
+for the *presence* of instruction-like patterns before a sub-agent sees them.
 
 ## Why
 
-Sub-agents delegated to research tasks are often less hardened against prompt injection
-than a primary assistant. A quick lint pass on fetched content before an agent processes
-it provides a lightweight but meaningful safety layer.
+Sub-agents delegated to research tasks are typically less hardened against
+prompt injection than a primary assistant. They may have access to tools,
+credentials, or actions that an attacker could exploit by embedding
+instructions in fetched content.
+
+A lint pass on external content before an agent processes it is a lightweight
+but meaningful safety layer. It is not a complete solution — cryptographic
+skill verification and strict allowlisting are also required — but it is a
+practical first line of defense deployable today.
 
 ## Usage
 
@@ -72,32 +97,37 @@ def lint_before_processing(filepath: str, threshold: str = "high") -> dict:
     return report
 ```
 
-## Contributing
+## Statistical Layer
 
-### Adding patterns
+In addition to pattern matching, prompt-lint includes a statistical scoring
+layer (n-gram LLR model) trained on a corpus of 11 malicious and 161 benign
+documents. The statistical score is additive — it complements rule-based
+findings without replacing them.
 
-Patterns live in the `PATTERNS` list in `prompt_lint.py`. Each pattern needs:
-- `category` — one of the categories above
-- `severity` — `low | medium | high | critical`
-- `description` — one-line human description
-- `regex` — the detection pattern
-- `note` — explanation of the attack vector
-
-### Test suite
-
-The `tests/` directory contains labeled examples:
-- `tests/benign/` — legitimate documentation, READMEs, research notes
-- `tests/malicious/` — known injection payloads (labeled by category/source)
-- `tests/ambiguous/` — skill files, agent docs, borderline content
-
-Run tests: `python3 tests/run_tests.py`
+Retrain the model after expanding the corpus:
+```bash
+python3 corpus_analysis.py --output model.json
+```
 
 ## Limitations
 
-- Pattern-based; a sufficiently novel/obfuscated attack may evade detection
-- Does not detect semantic injection (paraphrased attacks without keywords)
+- Pattern-based; a sufficiently novel or obfuscated attack may evade detection
+- Does not detect purely semantic injection (paraphrased attacks without keywords)
 - Unicode homoglyphs, Base64 encoding, and split-token attacks not yet covered
-- High threshold mode may miss subtle attacks; low threshold has more false positives
+- Not a substitute for allowlisting and cryptographic skill verification
+
+## Related Work
+
+See [`POSITION.md`](POSITION.md) for a broader treatment of the skill trust
+problem: how skills should be allowlisted, cryptographically verified, and
+isolated, and how prompt-lint fits into that security model.
+
+## Contributing
+
+Patterns live in the `PATTERNS` list in `prompt_lint.py`. The test suite is in
+`tests/` with labeled benign, malicious, and ambiguous examples.
+
+Run tests: `python3 tests/run_tests.py`
 
 ## License
 
