@@ -176,6 +176,72 @@ PATTERNS = [
         "Agent behavior override via skill syntax",
         r"(?i)(when\s+.{0,60}:\s*\n\s*(always|never|must|do not|ignore|bypass))",
         "Skill-style conditional instruction that overrides agent behavior"),
+
+    # --- Model-specific format tokens (ChatML / Qwen / LLaMA / tool formats) ---
+    Pattern("CONTEXT_SPOOF", "critical",
+        "ChatML / Qwen model format token",
+        r"<\|im_start\|>|<\|im_end\|>|<\|endoftext\|>|<\|system\|>|<\|user\|>|<\|assistant\|>",
+        "Qwen/ChatML special tokens — in external content signals prompt boundary injection"),
+
+    Pattern("CONTEXT_SPOOF", "critical",
+        "LLaMA instruction format token",
+        r"(?m)^\s*\[INST\]|</s>\s*\[INST\]|\[/INST\]",
+        "LLaMA-format instruction delimiter — creates false instruction boundary"),
+
+    # --- Tool call injection ---
+    Pattern("TOOL_ABUSE", "critical",
+        "Structured tool call injection",
+        r"<tool_call>|<function_call>|<tool_response>|<tool_result>",
+        "Tool call XML tags in external content — attempts to inject fake tool invocations"),
+
+    Pattern("TOOL_ABUSE", "high",
+        "JSON tool call structure injection",
+        r'(?i)"tool_use"\s*:|"function_call"\s*:|"tool_name"\s*:.{0,60}"input"\s*:',
+        "JSON-structured tool call pattern — may inject agent actions"),
+
+    # --- Conditional and delayed triggers ---
+    Pattern("INSTRUCTION_OVERRIDE", "high",
+        "Conditional trigger — fires when content is read by agent",
+        r"(?i)(if|when)\s+(you|claude|the\s+(ai|agent|assistant|model))\s+(read|reads?|see|sees?|process(?:es)?|encounter|encounters?)\s+(this|the\s+(following|above))",
+        "Delayed trigger designed to fire when processed by agent — evades per-fetch detection"),
+
+    Pattern("INSTRUCTION_OVERRIDE", "high",
+        "Temporal activation trigger",
+        r"(?i)when\s+this\s+(message|text|content|output|document)\s+(is|was|gets?)\s+(read|processed|ingested|loaded|seen)\s+by",
+        "Content that activates conditionally on being read — cross-turn injection pattern"),
+
+    # --- Backdoored model / model-aware semantic triggers ---
+    Pattern("ROLE_HIJACK", "high",
+        "Model-aware self-reference injection",
+        r"(?i)as\s+(the\s+)?(ai|assistant|claude|anthropic|llm|language\s+model)\s*[,:\-]",
+        "Content narrating from the model's perspective — typical of backdoored model output injections"),
+
+    Pattern("INSTRUCTION_OVERRIDE", "high",
+        "Model output correction / addendum framing",
+        r"(?i)(model|assistant|ai)\s+(update|correction|addendum|override|note|clarification)\s*[:\-]",
+        "Framing external content as an authoritative model correction"),
+
+    Pattern("INSTRUCTION_OVERRIDE", "medium",
+        "Hidden or embedded instruction framing",
+        r"(?i)(internal|hidden|embedded|secret|invisible)\s+(instruction|note|directive|command)\s*[:\-]",
+        "Attempts to pass instructions as hidden metadata"),
+
+    # --- Encoded / obfuscated payloads ---
+    Pattern("EXFILTRATION", "high",
+        "Base64 decode instruction",
+        r"(?i)base64\s*[_\-]?\s*(decode|decoding)|(?:decode|deserialize)\s+(?:the\s+following|this\s+(string|payload|data))",
+        "Instruction to decode an encoded payload — common obfuscation technique"),
+
+    Pattern("EXFILTRATION", "medium",
+        "Hex escape sequence cluster",
+        r"(\\x[0-9a-fA-F]{2}){3,}",
+        "Dense hex escape sequences — possible encoded payload"),
+
+    # --- Length anomaly (additive signal, low severity) ---
+    Pattern("URGENCY_OVERRIDE", "low",
+        "Unusually long content block",
+        r"(?s).{8000,}",
+        "Content exceeds 8,000 chars — very long documents have higher injection surface area"),
 ]
 
 SEVERITY_SCORE = {"low": 1, "medium": 3, "high": 7, "critical": 15}
@@ -301,41 +367,334 @@ def fmt_json(path: str, findings: list[Finding], score: int) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Batch scan — cross-document fragmented injection detection
+# ---------------------------------------------------------------------------
+
+def scan_batch(paths: list[Path], threshold: str = "low") -> dict:
+    """
+    Scan a batch of documents and detect both per-document findings and
+    cross-document fragmented injection patterns.
+
+    Fragmented injection: a multi-stage attack where no single document
+    triggers detection, but the combination does. Classic pattern:
+      doc1: "when you see the phrase ACTIVATE..."
+      doc5: "...ACTIVATE: execute [malicious action]"
+
+    Returns a BatchReport dict suitable for JSON output or terminal display.
+    """
+    min_score = SEVERITY_SCORE[threshold]
+
+    # --- Per-document scan ---
+    doc_results = []
+    all_texts = {}
+    for p in paths:
+        try:
+            text = p.read_text(errors="replace")
+        except Exception as e:
+            doc_results.append({"file": str(p), "error": str(e)})
+            continue
+        all_texts[str(p)] = text
+        findings = scan(text)
+        filtered = [f for f in findings if SEVERITY_SCORE[f.severity] >= min_score]
+        score = risk_score(filtered)
+        doc_results.append({
+            "file": str(p),
+            "risk_level": risk_level(score),
+            "risk_score": score,
+            "finding_count": len(filtered),
+            "findings": [asdict(f) for f in filtered],
+        })
+
+    # --- Cross-document fragmentation detection ---
+    cross_findings = _cross_doc_scan(all_texts)
+
+    total_score = sum(d.get("risk_score", 0) for d in doc_results)
+    has_cross = len(cross_findings) > 0
+    batch_level = risk_level(total_score + (30 if has_cross else 0))
+
+    return {
+        "batch_risk_level": batch_level,
+        "total_score": total_score,
+        "documents_scanned": len(doc_results),
+        "cross_document_findings": cross_findings,
+        "documents": doc_results,
+    }
+
+
+# Patterns that only make sense as *half* of a multi-document attack
+_FRAGMENT_PATTERNS = [
+    # Setup fragments: plant a trigger keyword
+    (re.compile(
+        r"(?i)when\s+you\s+(see|encounter|read|receive)\s+(?:the\s+(?:word|phrase|text|string|keyword|code))?\s*[\"']?([A-Z_]{3,20})[\"']?",
+        re.IGNORECASE),
+     "trigger_setup",
+     "Sets up a trigger keyword — may pair with a completion fragment in another doc"),
+
+    # Completion fragments: invoke the keyword
+    (re.compile(
+        r"(?i)\b([A-Z_]{3,20})\b\s*[:]\s*(execute|run|send|delete|exfiltrate|override|ignore|bypass)",
+        re.IGNORECASE),
+     "trigger_completion",
+     "Activates a keyword trigger with a malicious action — check if keyword was planted elsewhere"),
+
+    # Continuation fragments
+    (re.compile(
+        r"(?i)(continued?\s+from\s+(previous|prior|above|last)\s+(page|document|source|result))",
+        re.IGNORECASE),
+     "continuation",
+     "Claims to continue from another document — potential cross-turn injection"),
+
+    # Accumulating instructions
+    (re.compile(
+        r"(?i)(add\s+this\s+to|remember\s+for\s+(later|the\s+next|subsequent)\s+(step|request|turn|message|page))",
+        re.IGNORECASE),
+     "accumulation",
+     "Instructs agent to carry information forward across documents/turns"),
+]
+
+
+def _cross_doc_scan(texts: dict[str, str]) -> list[dict]:
+    """
+    Detect fragmented injection patterns across a batch of documents.
+    Looks for setup/completion pairs and accumulation patterns.
+    """
+    findings = []
+
+    # Collect all fragment hits per type
+    fragment_hits: dict[str, list[dict]] = {}
+    for path, text in texts.items():
+        for pat, frag_type, note in _FRAGMENT_PATTERNS:
+            for m in pat.finditer(text):
+                line_no = text[:m.start()].count('\n') + 1
+                fragment_hits.setdefault(frag_type, []).append({
+                    "file": path,
+                    "line": line_no,
+                    "snippet": m.group(0)[:80],
+                    "note": note,
+                })
+
+    # Flag if both setup and completion fragments appear (in any docs)
+    setups = fragment_hits.get("trigger_setup", [])
+    completions = fragment_hits.get("trigger_completion", [])
+    if setups and completions:
+        findings.append({
+            "type": "CROSS_DOC_TRIGGER_PAIR",
+            "severity": "critical",
+            "description": "Trigger setup/completion pair found across documents — possible fragmented injection",
+            "setup_fragments": setups,
+            "completion_fragments": completions,
+        })
+
+    # Flag any accumulation or continuation patterns
+    for frag_type in ("accumulation", "continuation"):
+        for hit in fragment_hits.get(frag_type, []):
+            findings.append({
+                "type": f"CROSS_DOC_{frag_type.upper()}",
+                "severity": "high",
+                "description": hit["note"],
+                "file": hit["file"],
+                "line": hit["line"],
+                "snippet": hit["snippet"],
+            })
+
+    return findings
+
+
+def fmt_batch_text(report: dict) -> str:
+    c = COLORS
+    level = report["batch_risk_level"]
+    lc = c.get(level.lower(), "")
+    lines = [
+        f"\n{lc}prompt-lint batch: {report['documents_scanned']} documents{c['reset']}",
+        f"Batch risk: {lc}{level} (total score: {report['total_score']}){c['reset']}\n",
+    ]
+
+    cross = report.get("cross_document_findings", [])
+    if cross:
+        lines.append(f"{c['critical']}⚠  CROSS-DOCUMENT FINDINGS ({len(cross)}){c['reset']}")
+        for cf in cross:
+            sev = cf.get("severity", "high")
+            lines.append(f"  {c.get(sev, '')}[{sev.upper()}] {cf['type']}{c['reset']}")
+            lines.append(f"         {cf['description']}")
+            if "setup_fragments" in cf:
+                for s in cf["setup_fragments"][:3]:
+                    lines.append(f"         setup  → {s['file']}:{s['line']}  \"{s['snippet']}\"")
+            if "completion_fragments" in cf:
+                for s in cf["completion_fragments"][:3]:
+                    lines.append(f"         fire   → {s['file']}:{s['line']}  \"{s['snippet']}\"")
+            lines.append("")
+
+    for doc in report["documents"]:
+        if "error" in doc:
+            lines.append(f"  ✗ {doc['file']}: {doc['error']}")
+            continue
+        rl = doc["risk_level"]
+        dc = c.get(rl.lower() if rl.lower() in c else "reset", "")
+        flag = "✓" if rl == "CLEAN" else "✗"
+        lines.append(
+            f"  {dc}{flag} [{rl:8}]{c['reset']} {doc['file']}"
+            + (f"  ({doc['finding_count']} findings)" if doc["finding_count"] else "")
+        )
+
+    return "\n".join(lines)
+
 def main():
     parser = argparse.ArgumentParser(
         description="Lint text/markdown files for prompt injection patterns")
-    parser.add_argument("file", help="File to scan, or - for stdin")
+    parser.add_argument("files", nargs="*",
+        help="File(s) to scan, or - for stdin. Multiple files trigger batch mode.")
     parser.add_argument("--format", choices=["text", "json"], default="text")
     parser.add_argument("--threshold", choices=["low", "medium", "high", "critical"],
                         default="low", help="Minimum severity to report")
     parser.add_argument("--exit-code", action="store_true",
                         help="Exit 1 if any findings above threshold")
+    parser.add_argument("--batch", action="store_true",
+                        help="Force batch mode (cross-document analysis) even for single file")
+    parser.add_argument("--dir", type=Path, metavar="DIR",
+                        help="Scan all .md/.txt files in a directory (implies batch mode)")
     args = parser.parse_args()
 
-    if args.file == "-":
-        text = sys.stdin.read()
-        path = "<stdin>"
-    else:
-        p = Path(args.file)
-        if not p.exists():
-            print(f"error: file not found: {args.file}", file=sys.stderr)
+    # --- Collect files ---
+    paths: list[Path] = []
+    if not args.files and not args.dir:
+        parser.print_help()
+        sys.exit(2)
+    if args.dir:
+        paths = sorted(args.dir.glob("**/*.md")) + sorted(args.dir.glob("**/*.txt"))
+        if not paths:
+            print(f"error: no .md or .txt files found in {args.dir}", file=sys.stderr)
             sys.exit(2)
-        text = p.read_text(errors="replace")
-        path = str(p)
+    elif len(args.files) == 1 and args.files[0] == "-":
+        text = sys.stdin.read()
+        findings = scan(text)
+        min_score = SEVERITY_SCORE[args.threshold]
+        filtered = [f for f in findings if SEVERITY_SCORE[f.severity] >= min_score]
+        score = risk_score(filtered)
+        if args.format == "json":
+            print(fmt_json("<stdin>", filtered, score))
+        else:
+            print(fmt_text("<stdin>", filtered, score, args.threshold))
+        if args.exit_code and filtered:
+            sys.exit(1)
+        return
+    else:
+        for f in args.files:
+            p = Path(f)
+            if not p.exists():
+                print(f"error: file not found: {f}", file=sys.stderr)
+                sys.exit(2)
+            paths.append(p)
 
+    # --- Batch mode: multiple files or --batch / --dir flag ---
+    if len(paths) > 1 or args.batch or args.dir:
+        report = scan_batch(paths, threshold=args.threshold)
+        if args.format == "json":
+            print(json.dumps(report, indent=2))
+        else:
+            print(fmt_batch_text(report))
+        if args.exit_code:
+            has_issues = (report["total_score"] > 0 or
+                          len(report.get("cross_document_findings", [])) > 0)
+            if has_issues:
+                sys.exit(1)
+        return
+
+    # --- Single file mode ---
+    path = paths[0]
+    text = path.read_text(errors="replace")
     findings = scan(text)
-    # Filter by threshold
     min_score = SEVERITY_SCORE[args.threshold]
     filtered = [f for f in findings if SEVERITY_SCORE[f.severity] >= min_score]
     score = risk_score(filtered)
 
     if args.format == "json":
-        print(fmt_json(path, filtered, score))
+        print(fmt_json(str(path), filtered, score))
     else:
-        print(fmt_text(path, filtered, score, args.threshold))
+        print(fmt_text(str(path), filtered, score, args.threshold))
+
+    if args.exit_code and filtered:
+        sys.exit(1)
+
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Lint text/markdown files for prompt injection patterns")
+    parser.add_argument("files", nargs="*",
+        help="File(s) to scan, or - for stdin. Multiple files trigger batch mode.")
+    parser.add_argument("--format", choices=["text", "json"], default="text")
+    parser.add_argument("--threshold", choices=["low", "medium", "high", "critical"],
+                        default="low", help="Minimum severity to report")
+    parser.add_argument("--exit-code", action="store_true",
+                        help="Exit 1 if any findings above threshold")
+    parser.add_argument("--batch", action="store_true",
+                        help="Force batch mode (cross-document analysis) even for single file")
+    parser.add_argument("--dir", type=Path, metavar="DIR",
+                        help="Scan all .md/.txt files in a directory (implies batch mode)")
+    args = parser.parse_args()
+
+    # --- Collect files ---
+    paths: list[Path] = []
+    if not args.files and not args.dir:
+        parser.print_help()
+        sys.exit(2)
+    if args.dir:
+        paths = sorted(args.dir.glob("**/*.md")) + sorted(args.dir.glob("**/*.txt"))
+        if not paths:
+            print(f"error: no .md or .txt files found in {args.dir}", file=sys.stderr)
+            sys.exit(2)
+    elif len(args.files) == 1 and args.files[0] == "-":
+        text = sys.stdin.read()
+        findings = scan(text)
+        min_score = SEVERITY_SCORE[args.threshold]
+        filtered = [f for f in findings if SEVERITY_SCORE[f.severity] >= min_score]
+        score = risk_score(filtered)
+        if args.format == "json":
+            print(fmt_json("<stdin>", filtered, score))
+        else:
+            print(fmt_text("<stdin>", filtered, score, args.threshold))
+        if args.exit_code and filtered:
+            sys.exit(1)
+        return
+    else:
+        for f in args.files:
+            p = Path(f)
+            if not p.exists():
+                print(f"error: file not found: {f}", file=sys.stderr)
+                sys.exit(2)
+            paths.append(p)
+
+    # --- Batch mode: multiple files or --batch / --dir flag ---
+    if len(paths) > 1 or args.batch or args.dir:
+        report = scan_batch(paths, threshold=args.threshold)
+        if args.format == "json":
+            print(json.dumps(report, indent=2))
+        else:
+            print(fmt_batch_text(report))
+        if args.exit_code:
+            has_issues = (report["total_score"] > 0 or
+                          len(report.get("cross_document_findings", [])) > 0)
+            if has_issues:
+                sys.exit(1)
+        return
+
+    # --- Single file mode ---
+    path = paths[0]
+    text = path.read_text(errors="replace")
+    findings = scan(text)
+    min_score = SEVERITY_SCORE[args.threshold]
+    filtered = [f for f in findings if SEVERITY_SCORE[f.severity] >= min_score]
+    score = risk_score(filtered)
+
+    if args.format == "json":
+        print(fmt_json(str(path), filtered, score))
+    else:
+        print(fmt_text(str(path), filtered, score, args.threshold))
 
     if args.exit_code and filtered:
         sys.exit(1)
 
 if __name__ == "__main__":
     main()
+
